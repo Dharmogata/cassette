@@ -164,28 +164,27 @@ class CassetteTestSuite(unittest.TestCase):
     def test_live_replay_server_hit_and_miss(self) -> None:
         cassette = _sample_cassette()
         server = CassetteReplayServer(cassette, host="127.0.0.1", port=0)
-        base_url = server.start_background()
-        try:
-            req = urllib.request.Request(
-                f"{base_url}/v1/charges?currency=usd",
-                data=b'{"amount": 2500, "customer": "cus_01"}',
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                self.assertEqual(resp.status, 200)
-                self.assertEqual(resp.headers.get("X-Cassette-Interaction"), "step-001")
-                payload = json.loads(resp.read().decode("utf-8"))
-                self.assertTrue(payload["paid"])
+        status, headers, body = server.dispatch(
+            "POST",
+            "/v1/charges?currency=usd",
+            headers={"Content-Type": "application/json"},
+            body='{"amount": 2500, "customer": "cus_01"}',
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("X-Cassette-Interaction"), "step-001")
+        payload = json.loads(body)
+        self.assertTrue(payload["paid"])
 
-            with self.assertRaises(urllib.error.HTTPError) as ctx:
-                urllib.request.urlopen(f"{base_url}/v1/unknown", timeout=5)
-            self.assertEqual(ctx.exception.code, 404)
-            ctx.exception.close()
-            self.assertEqual(server.hits, 1)
-            self.assertEqual(server.misses, 1)
-        finally:
-            server.stop()
+        miss_status, miss_headers, miss_body = server.dispatch("GET", "/v1/unknown")
+        self.assertEqual(miss_status, 404)
+        self.assertEqual(miss_headers.get("X-Cassette-Miss"), "true")
+        self.assertIn("nearest_interaction_id", json.loads(miss_body))
+        self.assertEqual(server.hits, 1)
+        self.assertEqual(server.misses, 1)
+
+        chaos_server = CassetteReplayServer(cassette, chaos_status=503)
+        c_status, _, _ = chaos_server.dispatch("GET", "/v1/customers/cus_01")
+        self.assertEqual(c_status, 503)
 
     def test_cli_commands_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
